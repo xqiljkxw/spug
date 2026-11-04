@@ -80,12 +80,14 @@ def get_reused_artifact_error(req):
         except (TypeError, ValueError):
             return f'选择的{label}来源信息无效'
 
+        # 选择已有制品发布时，申请 extra 为 [source_type] + 制品 extra；
+        # 发布过程中自动构建的制品（SPUG AUTO MAKE）其 extra 直接复制自原申请，
+        # 因此原申请的 extra 与制品 extra 相同，两种形式都应视为一致。
+        expected_extras = [[source_type] + artifact_extra]
         if artifact.remarks == 'SPUG AUTO MAKE':
-            expected_extra = artifact_extra
-        else:
-            expected_extra = [source_type] + artifact_extra
+            expected_extras.append(artifact_extra)
         if (
-                request_extra != expected_extra
+                request_extra not in expected_extras
                 or req.version != artifact.version
                 or req.spug_version != artifact.spug_version):
             return f'发布申请与选择的{label}来源信息不一致'

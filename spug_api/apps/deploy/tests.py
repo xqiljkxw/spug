@@ -1299,6 +1299,43 @@ class DeployRequestObjectScopeTests(TestCase):
 
         self.assertIn('来源信息不一致', error)
 
+    def test_selecting_auto_made_image_is_consistent(self):
+        image_deploy = self.make_deploy(
+            self.allowed_app,
+            self.allowed_env,
+        )
+        image_deploy.extend = '3'
+        image_deploy.save(update_fields=('extend',))
+        image = DockerImage.objects.create(
+            app=self.allowed_app,
+            env=self.allowed_env,
+            deploy=image_deploy,
+            version='v2.0.0',
+            spug_version='auto-made-image',
+            url='registry.example/app:v2.0.0',
+            extra=json.dumps(['tag', 'v2.0.0', None]),
+            remarks='SPUG AUTO MAKE',
+            status='5',
+            created_by=self.creator,
+        )
+        for extra in (
+                ['docker_image', 'tag', 'v2.0.0', None],
+                ['tag', 'v2.0.0', None],
+        ):
+            request_obj = DeployRequest.objects.create(
+                deploy=image_deploy,
+                docker_image=image,
+                name='选择自动构建镜像',
+                type='1',
+                extra=json.dumps(extra),
+                host_ids='[]',
+                status='1',
+                version=image.version,
+                spug_version=image.spug_version,
+                created_by=self.creator,
+            )
+            self.assertEqual('', get_reused_artifact_error(request_obj))
+
     def test_operator_can_resolve_unknown_request_as_success(self):
         request_obj = self.make_request(self.allowed_deploy, status='-2')
         request_obj.failed_at = '2026-07-23 10:00:00'
