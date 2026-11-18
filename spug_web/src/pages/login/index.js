@@ -38,6 +38,7 @@ export default function () {
   }, [])
 
   function handleSubmit() {
+    if (loading) return;
     const formData = form.getFieldsValue();
     if (codeVisible && !formData.captcha) return message.error('请输入验证码');
     setLoading(true);
@@ -102,7 +103,7 @@ export default function () {
           <Tabs.TabPane tab="普通登录" key="default"/>
           <Tabs.TabPane tab="LDAP登录" key="ldap"/>
         </Tabs>
-        <Form form={form}>
+        <Form form={form} onFinish={handleSubmit}>
           <Form.Item name="username" className={styles.formItem}>
             <Input
               size="large"
@@ -118,7 +119,6 @@ export default function () {
               autoComplete="off"
               placeholder="请输入密码"
               onChange={resetMFA}
-              onPressEnter={handleSubmit}
               prefix={<LockOutlined className={styles.icon}/>}/>
           </Form.Item>
           <Form.Item hidden={!codeVisible} name="captcha" className={styles.formItem}>
@@ -129,15 +129,14 @@ export default function () {
               placeholder="请输入身份认证器中的6位验证码"
               prefix={<SafetyCertificateOutlined className={styles.icon}/>}/>
           </Form.Item>
+          <Button
+            block
+            size="large"
+            type="primary"
+            htmlType="submit"
+            className={styles.button}
+            loading={loading}>登录</Button>
         </Form>
-
-        <Button
-          block
-          size="large"
-          type="primary"
-          className={styles.button}
-          loading={loading}
-          onClick={handleSubmit}>登录</Button>
       </div>
 
       <div className={styles.footerZone}>
