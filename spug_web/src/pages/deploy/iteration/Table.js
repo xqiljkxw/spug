@@ -20,7 +20,9 @@ function ComTable() {
       '1': 'orange',
       '2': 'green',
       '-1': 'red',
-      '-3': 'magenta'
+      '-2': 'gold',
+      '-3': 'magenta',
+      '-4': 'default'
     };
     return colors[status] || 'default';
   };
@@ -124,6 +126,11 @@ function ComTable() {
         // 只有待发布状态才能编辑和删除
         const canEdit = record.status === '0';
         const canDelete = record.status === '0';
+        // 存在待发布应用，且没有发布中/排队中、结果未知、镜像上传中的应用时才能关闭（后端同样校验）
+        const details = record.details || [];
+        const canClose = record.status !== '-4'
+          && details.some(d => d.status === '0')
+          && !details.some(d => ['1', '4'].includes(d.status) || d.image_status === '1');
         
         return (
           <Action>
@@ -143,6 +150,17 @@ function ComTable() {
                   store.record = record;
                   store.formVisible = true;
                 }}>编辑</Action.Button>
+            )}
+            {canClose && (
+              <Popconfirm
+                title={<div style={{maxWidth: 280}}>确定要关闭该迭代吗？待发布的应用将标记为已关闭，其他应用保持原状态，关闭后迭代不能再做任何修改。</div>}
+                onConfirm={() => store.closeRecord(record.id)}
+                okText="关闭迭代"
+                okButtonProps={{danger: true}}
+                cancelText="取消"
+              >
+                <Action.Button auth="deploy.iteration.do" danger>关闭</Action.Button>
+              </Popconfirm>
             )}
             {canDelete && (
               <Popconfirm
@@ -221,6 +239,7 @@ function ComTable() {
             '1': 'warning',
             '2': 'success',
             '3': 'error',
+            '4': 'gold',
           };
           return <Tag color={statusColors[status] || 'default'}>{item.status_alias || '待发布'}</Tag>;
         }

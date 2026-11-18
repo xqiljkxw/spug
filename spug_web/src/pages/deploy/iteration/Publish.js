@@ -32,6 +32,8 @@ import S from './index.module.less';
 
 function Publish() {
   const record = store.record;
+  // 已关闭的迭代只读，隐藏所有修改类操作
+  const isClosed = record.status === '-4';
   const publishStatus = store.publishStatus || [];
   const iterationDetailCount = publishStatus.reduce((sum, env) => sum + env.total, 0);
   const [uploadingEnv, setUploadingEnv] = useState(null);
@@ -553,7 +555,8 @@ function Publish() {
         
         const imageUploading = isContainer && imageStatus === '1';  // 上传中
         const imageUploaded = isContainer && imageStatus === '2';   // 已上传
-        const retryableFailure = status === '3'
+        const retryableFailure = !isClosed
+          && status === '3'
           && detail.request_id
           && detail.request_retry_allowed;
         const canEditVersion = !imageUploading
@@ -622,7 +625,7 @@ function Publish() {
         return (
           <Space>
             {getImageStatusTag(imageStatus, isContainer)}
-            {imageStatus === '3' && (
+            {imageStatus === '3' && !isClosed && (
               <Tooltip title="重新上传镜像">
                 <Button
                   type="link"
@@ -644,7 +647,7 @@ function Publish() {
       dataIndex: 'cross_iteration_warning',
       width: 160,
       render: (warning, detail) => {
-        if (detail.status === '2' || !warning || !warning.has_warning) {
+        if (isClosed || detail.status === '2' || !warning || !warning.has_warning) {
           return <span style={{ color: '#bfbfbf' }}>-</span>;
         }
         return (
@@ -678,7 +681,7 @@ function Publish() {
         <Space>
           {getStatusIcon(status)}
           {getStatusTag(status, record.status_alias)}
-          {status === '3' && record.request_id && record.request_retry_allowed && (
+          {status === '3' && !isClosed && record.request_id && record.request_retry_allowed && (
             <Tooltip title={`可在 ${record.request_retry_deadline} 前重试`}>
               <Button
                 type="link"
@@ -781,6 +784,14 @@ function Publish() {
       width={1200}
       bodyStyle={{ padding: '16px 24px', maxHeight: '70vh', overflowY: 'auto' }}
     >
+      {isClosed && (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="该迭代已关闭，只能查看，不能再发布、重试或修改；待发布的应用已标记为已关闭，其他应用保持原状态。"
+        />
+      )}
       {/* 总体进度 */}
       <Card size="small" style={{ marginBottom: 16, borderRadius: 8 }}>
         <Row align="middle" gutter={16}>
@@ -813,6 +824,11 @@ function Publish() {
               <Col span={6}>
                 <Badge status="error" text={`失败: ${publishStatus.reduce((s, e) => s + e.failed, 0)}`} />
               </Col>
+              {isClosed && (
+                <Col span={6}>
+                  <Badge status="default" text={`已关闭: ${publishStatus.reduce((s, e) => s + (e.closed || 0), 0)}`} />
+                </Col>
+              )}
             </Row>
           </Col>
         </Row>
@@ -835,7 +851,7 @@ function Publish() {
         const batchRemovalWouldEmptyIteration = (
           removableDetails.length >= iterationDetailCount
         );
-        const warningDetails = (details || []).filter(detail => (
+        const warningDetails = isClosed ? [] : (details || []).filter(detail => (
           detail.status !== '2'
           && detail.cross_iteration_warning
           && detail.cross_iteration_warning.has_warning

@@ -19,4 +19,5 @@ urlpatterns = [
     path('iteration/publish/', IterationPublishView.as_view()),
     path('iteration/image/', IterationImageView.as_view()),
     path('iteration/detail/', IterationDetailView.as_view()),
+    path('iteration/close/', IterationCloseView.as_view()),
 ]

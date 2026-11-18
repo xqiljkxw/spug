@@ -10,7 +10,7 @@ from apps.deploy.models import DeployRequest
 from apps.app.models import DeployExtend1, DeployExtend3
 from apps.exec.models import ExecHistory, Transfer
 from apps.notify.models import Notify
-from apps.deploy.utils import dispatch, lock_deploy_and_get_running_request
+from apps.deploy.utils import dispatch, lock_deploy_and_get_running_request, auto_close_idle_iterations
 from apps.repository.models import Repository
 from libs.utils import parse_time, human_datetime, human_date
 from datetime import datetime, timedelta
@@ -22,6 +22,12 @@ import os
 
 
 def auto_run_by_day():
+    try:
+        # 独立捕获异常，避免影响后续清理任务
+        auto_close_idle_iterations()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f'自动关闭超期迭代失败: {e}')
     try:
         date_7 = human_date(datetime.now() - timedelta(days=7))
         date_30 = human_date(datetime.now() - timedelta(days=30))

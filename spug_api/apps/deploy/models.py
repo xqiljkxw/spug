@@ -116,6 +116,7 @@ class DeployIteration(models.Model, ModelMixin):
         ('-1', '部分失败'),
         ('-2', '结果未知'),
         ('-3', '发布失败'),
+        ('-4', '已关闭'),
     )
     name = models.CharField(max_length=100)
     status = models.CharField(max_length=2, choices=STATUS, default='0')
@@ -151,6 +152,7 @@ class DeployIterationDetail(models.Model, ModelMixin):
         ('2', '发布成功'),
         ('3', '发布失败'),
         ('4', '结果未知'),
+        ('5', '已关闭'),
     )
     IMAGE_STATUS_CHOICES = (
         ('0', '未上传'),

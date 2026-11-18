@@ -37,6 +37,11 @@ from apps.deploy.utils import (
     lock_deploy_and_get_running_request,
     reconcile_iteration_detail_statuses,
     scoped_deploy_requests,
+    close_iteration,
+    get_iteration_closed_error,
+    get_request_iteration_closed_error,
+    ITERATION_CLOSED_STATUS,
+    ITERATION_DETAIL_CLOSED_STATUS,
 )
 from apps.host.models import Host
 from apps.config.models import Environment
@@ -318,6 +323,9 @@ class RequestDetailView(View):
             return json_response(error=artifact_error)
         if req.status not in ('1', '-3'):
             return json_response(error='该申请单当前状态还不能执行发布')
+        closed_error = get_request_iteration_closed_error(req)
+        if closed_error:
+            return json_response(error=closed_error)
         is_retry = req.status == '-3'
         if is_retry:
             retry_error = get_deploy_retry_error(req)
@@ -1209,6 +1217,7 @@ class IterationView(View):
                         '-1': '部分失败',
                         '-2': '结果未知',
                         '-3': '发布失败',
+                        ITERATION_CLOSED_STATUS: '已关闭',
                     }
                     return json_response(error=f'当前状态为"{status_map.get(iteration.status, iteration.status)}"，只有待发布状态才能编辑')
                 
@@ -1302,9 +1311,10 @@ class IterationView(View):
                         '0': '待发布',
                         '1': '发布中',
                         '2': '发布成功',
-                        '-1': '已取消',
+                        '-1': '部分失败',
                         '-2': '结果未知',
-                        '-3': '发布异常',
+                        '-3': '发布失败',
+                        ITERATION_CLOSED_STATUS: '已关闭',
                     }
                     return json_response(error=f'当前状态为"{status_map.get(iteration.status, iteration.status)}"，只有待发布状态才能删除')
                 
@@ -1345,6 +1355,9 @@ class IterationPublishView(View):
                 )
                 if scope_error:
                     return json_response(error=scope_error)
+                closed_error = get_iteration_closed_error(iteration)
+                if closed_error:
+                    return json_response(error=closed_error)
                 if (
                         not request.user.is_supper
                         and form.env_id not in request.user.deploy_perms['envs']):
@@ -1620,6 +1633,7 @@ class IterationPublishView(View):
                             'publishing': 0,
                             'success': 0,
                             'failed': 0,
+                            'closed': 0,
                             'image_uploading': 0,  # 镜像上传中数量
                             'image_success': 0,    # 镜像上传成功数量
                             'image_failed': 0,     # 镜像上传失败数量
@@ -1661,7 +1675,10 @@ class IterationPublishView(View):
                             request_retry_deadline = retry_info['retry_deadline']
                             request_retry_error = retry_info['retry_error']
                             expected_detail_status = get_iteration_detail_status(req.status)
-                            if expected_detail_status and expected_detail_status != detail_status:
+                            if (
+                                    detail_status != ITERATION_DETAIL_CLOSED_STATUS
+                                    and expected_detail_status
+                                    and expected_detail_status != detail_status):
                                 detail.status = expected_detail_status
                                 detail_status = expected_detail_status
                                 detail_status_alias = dict(
@@ -1678,6 +1695,8 @@ class IterationPublishView(View):
                         env_status[env_id]['success'] += 1
                     elif detail_status == '3':
                         env_status[env_id]['failed'] += 1
+                    elif detail_status == ITERATION_DETAIL_CLOSED_STATUS:
+                        env_status[env_id]['closed'] += 1
 
                     # 镜像上传状态统计
                     if detail_image_status == '1':
@@ -1740,7 +1759,10 @@ class IterationPublishView(View):
                 
                 # 使用统一规则更新迭代主状态，避免发布查询和后台同步出现不同结果
                 new_status = get_iteration_overall_status([detail.status for detail in details])
-                if new_status and iteration.status != new_status:
+                if (
+                        iteration.status != ITERATION_CLOSED_STATUS
+                        and new_status
+                        and iteration.status != new_status):
                     iteration.status = new_status
                     iteration.save()
                 
@@ -1794,6 +1816,9 @@ class IterationPublishView(View):
                 )
                 if scope_error:
                     return json_response(error=scope_error)
+                closed_error = get_iteration_closed_error(detail.iteration)
+                if closed_error:
+                    return json_response(error=closed_error)
                 scope_error = get_deploy_execution_scope_error(
                     request.user,
                     detail.deploy,
@@ -2145,6 +2170,9 @@ class IterationImageView(View):
                 )
                 if scope_error:
                     return json_response(error=scope_error)
+                closed_error = get_iteration_closed_error(iteration)
+                if closed_error:
+                    return json_response(error=closed_error)
                 if (
                         not request.user.is_supper
                         and form.env_id not in request.user.deploy_perms['envs']):
@@ -2320,6 +2348,9 @@ class IterationImageView(View):
                 )
                 if scope_error:
                     return json_response(error=scope_error)
+                closed_error = get_iteration_closed_error(detail.iteration)
+                if closed_error:
+                    return json_response(error=closed_error)
                 scope_error = get_deploy_execution_scope_error(
                     request.user,
                     detail.deploy,
@@ -2495,6 +2526,9 @@ class IterationDetailView(View):
                 )
                 if scope_error:
                     return json_response(error=scope_error)
+                closed_error = get_iteration_closed_error(iteration)
+                if closed_error:
+                    return json_response(error=closed_error)
                 
                 # 检查迭代状态 - 已完全成功的迭代不允许修改
                 if iteration.status == '2':
@@ -2610,6 +2644,9 @@ class IterationDetailView(View):
                 )
                 if scope_error:
                     return json_response(error=scope_error)
+                closed_error = get_iteration_closed_error(iteration)
+                if closed_error:
+                    return json_response(error=closed_error)
                 remove_error = get_iteration_detail_remove_error(detail)
                 if remove_error:
                     return json_response(error=remove_error)
@@ -2653,6 +2690,9 @@ class IterationDetailView(View):
                 scope_error = get_iteration_scope_error(request.user, iteration)
                 if scope_error:
                     return json_response(error=scope_error)
+                closed_error = get_iteration_closed_error(iteration)
+                if closed_error:
+                    return json_response(error=closed_error)
 
                 env_details = list(
                     DeployIterationDetail.objects.select_for_update().select_related(
@@ -2712,3 +2752,30 @@ class IterationDetailView(View):
             })
         except Exception as e:
             return json_response(error=str(e))
+
+
+class IterationCloseView(View):
+    """手动关闭迭代：未发布的明细置为已关闭，关闭后迭代只读。"""
+
+    @auth('deploy.iteration.do')
+    def post(self, request):
+        form, error = JsonParser(
+            Argument('id', type=int, required=True, help='迭代ID必填'),
+            Argument('reason', required=False),
+        ).parse(request.body)
+        if error is not None:
+            return json_response(error=error)
+        iteration = DeployIteration.objects.filter(pk=form.id).first()
+        if not iteration:
+            return json_response(error='未找到指定迭代')
+        scope_error = get_iteration_scope_error(request.user, iteration)
+        if scope_error:
+            return json_response(error=scope_error)
+        closed, close_error = close_iteration(
+            iteration.id,
+            operator=request.user,
+            reason=(form.reason or '').strip()[:100],
+        )
+        if not closed:
+            return json_response(error=close_error)
+        return json_response({'status': ITERATION_CLOSED_STATUS, 'status_alias': '已关闭'})

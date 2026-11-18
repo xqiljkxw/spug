@@ -5,6 +5,7 @@
  */
 import { observable, computed } from "mobx";
 import http from 'libs/http';
+import { message } from 'antd';
 import moment from 'moment';
 import lds, { isEmpty } from 'lodash';
 
@@ -89,6 +90,14 @@ class Store {
           }
         }
         return res;
+      })
+  };
+
+  closeRecord = (id, reason) => {
+    return http.post('/api/deploy/iteration/close/', {id, reason})
+      .then(() => {
+        message.success('迭代已关闭');
+        this.fetchRecords();
       })
   };
 

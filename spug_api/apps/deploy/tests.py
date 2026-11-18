@@ -20,6 +20,7 @@ from apps.deploy.models import (
     DeployUpload,
 )
 from apps.deploy.views import (
+    IterationCloseView,
     IterationDetailView,
     IterationImageView,
     IterationPublishView,
@@ -40,6 +41,7 @@ from apps.app.views import get_info as get_deploy_info
 from apps.app.views import get_versions as get_deploy_versions
 from apps.deploy.utils import (
     _cleanup_stale_requests,
+    auto_close_idle_iterations,
     dispatch_iteration_request,
     get_cross_iteration_warnings,
     get_iteration_detail_remove_error,
@@ -51,6 +53,7 @@ from apps.deploy.utils import (
     reconcile_iteration_detail_statuses,
 )
 from apps.deploy.helper import Helper, RemoteOutcomeUnknown
+from libs.utils import human_datetime
 
 
 class DeployUploadSecurityTests(TestCase):
@@ -1704,3 +1707,228 @@ class DeployIterationObjectScopeTests(TestCase):
         self.assertEqual('-2', self.iteration.status)
         _, unresolved = lock_deploy_and_get_running_request(self.deploy.id)
         self.assertEqual(deploy_request.id, unresolved.id)
+
+
+class IterationCloseTests(TestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.user = User.objects.create(
+            username='iteration-close-admin',
+            nickname='关闭管理员',
+            password_hash='-',
+            access_token='',
+            last_login='',
+            last_ip='',
+            is_supper=True,
+        )
+        self.env = Environment.objects.create(
+            name='关闭测试环境',
+            key='iteration-close-env',
+            created_by=self.user,
+        )
+        self.deploys = []
+        for index in range(4):
+            app = App.objects.create(
+                name=f'关闭测试应用{index}',
+                key=f'iteration-close-app-{index}',
+                created_by=self.user,
+            )
+            self.deploys.append(Deploy.objects.create(
+                app=app,
+                env=self.env,
+                host_ids='[]',
+                extend='1',
+                is_audit=False,
+                rst_notify='[]',
+                created_by=self.user,
+            ))
+        self.old_time = human_datetime(datetime.now() - timedelta(days=40))
+        self.iteration = self.make_iteration('超期迭代')
+
+    def make_iteration(self, name, created_at=None):
+        iteration = DeployIteration.objects.create(
+            name=name,
+            env=self.env,
+            status='1',
+            created_by=self.user,
+        )
+        created_at = created_at or self.old_time
+        DeployIteration.objects.filter(pk=iteration.id).update(
+            created_at=created_at,
+            updated_at=created_at,
+        )
+        iteration.refresh_from_db()
+        return iteration
+
+    def make_detail(self, iteration, deploy, status='0', request_status=None, request_time=None):
+        req = None
+        if request_status is not None:
+            request_time = request_time or self.old_time
+            req = DeployRequest.objects.create(
+                deploy=deploy,
+                name=f'迭代：{iteration.name}',
+                type='1',
+                extra='["tag", "v1.0.0", null]',
+                host_ids='[]',
+                version='v1.0.0',
+                spug_version='v1',
+                status=request_status,
+                created_by=self.user,
+            )
+            DeployRequest.objects.filter(pk=req.id).update(
+                created_at=request_time,
+                do_at=request_time,
+            )
+            req.refresh_from_db()
+        detail = DeployIterationDetail.objects.create(
+            iteration=iteration,
+            deploy=deploy,
+            version='v1.0.0',
+            status=status,
+            request_id=req.id if req else None,
+            created_by=self.user,
+        )
+        return detail, req
+
+    def decode(self, response):
+        return json.loads(response.content.decode())
+
+    def test_auto_close_only_closes_pending_details(self):
+        pending, _ = self.make_detail(self.iteration, self.deploys[0])
+        rejected, rejected_req = self.make_detail(self.iteration, self.deploys[1], '0', '-1')
+        failed, failed_req = self.make_detail(self.iteration, self.deploys[2], '3', '-3')
+        success, _ = self.make_detail(self.iteration, self.deploys[3], '2', '3')
+        pending.image_status = '2'
+        pending.save()
+
+        closed_ids = auto_close_idle_iterations(days=30)
+
+        self.assertEqual([self.iteration.id], closed_ids)
+        self.iteration.refresh_from_db()
+        self.assertEqual('-4', self.iteration.status)
+        for detail, expected in ((pending, '5'), (rejected, '5'), (failed, '3'), (success, '2')):
+            detail.refresh_from_db()
+            self.assertEqual(expected, detail.status)
+        pending.refresh_from_db()
+        self.assertEqual('2', pending.image_status)
+        rejected_req.refresh_from_db()
+        failed_req.refresh_from_db()
+        self.assertEqual('-1', rejected_req.status)
+        self.assertEqual('-3', failed_req.status)
+        self.assertTrue(DeployOperationLog.objects.filter(
+            target_type='iteration',
+            target_id=self.iteration.id,
+            action__startswith='系统自动关闭迭代',
+        ).exists())
+
+    def test_auto_close_skips_recent_activity_and_unknown_results(self):
+        recent_time = human_datetime(datetime.now() - timedelta(days=2))
+        self.make_detail(self.iteration, self.deploys[0], '3', '-3', recent_time)
+        unknown_iteration = self.make_iteration('结果未知迭代')
+        self.make_detail(unknown_iteration, self.deploys[1], '4', '-2')
+        new_iteration = self.make_iteration(
+            '新迭代',
+            human_datetime(datetime.now() - timedelta(days=1)),
+        )
+        self.make_detail(new_iteration, self.deploys[2])
+
+        self.assertEqual([], auto_close_idle_iterations(days=30))
+        for iteration in (self.iteration, unknown_iteration, new_iteration):
+            iteration.refresh_from_db()
+            self.assertNotEqual('-4', iteration.status)
+
+    def test_manual_close_rejects_running_or_queued(self):
+        self.make_detail(self.iteration, self.deploys[0])
+        self.make_detail(self.iteration, self.deploys[1], '1', '1')
+        request = self.factory.post(
+            '/api/deploy/iteration/close/',
+            data=json.dumps({'id': self.iteration.id}),
+            content_type='application/json',
+        )
+        request.user = self.user
+
+        result = self.decode(IterationCloseView.as_view()(request))
+
+        self.assertIn('正在发布或排队中', result['error'])
+        self.iteration.refresh_from_db()
+        self.assertEqual('1', self.iteration.status)
+
+    @patch('apps.deploy.views.Thread')
+    def test_closed_iteration_is_read_only(self, thread):
+        pending, _ = self.make_detail(self.iteration, self.deploys[0])
+        failed, failed_req = self.make_detail(self.iteration, self.deploys[1], '3', '-3')
+        request = self.factory.post(
+            '/api/deploy/iteration/close/',
+            data=json.dumps({'id': self.iteration.id, 'reason': '需求取消'}),
+            content_type='application/json',
+        )
+        request.user = self.user
+        self.assertEqual('-4', self.decode(IterationCloseView.as_view()(request))['data']['status'])
+
+        calls = [
+            (IterationPublishView, 'post', {'iteration_id': self.iteration.id, 'env_id': self.env.id}),
+            (IterationPublishView, 'patch', {'detail_id': failed.id}),
+            (IterationImageView, 'post', {'iteration_id': self.iteration.id, 'env_id': self.env.id}),
+            (IterationImageView, 'patch', {'detail_id': pending.id}),
+            (IterationDetailView, 'put', {'detail_id': pending.id, 'version': 'v2.0.0'}),
+            (IterationCloseView, 'post', {'id': self.iteration.id}),
+        ]
+        for view, method, body in calls:
+            request = getattr(self.factory, method)(
+                '/api/deploy/iteration/',
+                data=json.dumps(body),
+                content_type='application/json',
+            )
+            request.user = self.user
+            result = self.decode(view.as_view()(request))
+            self.assertIn('已关闭', result['error'], f'{view.__name__}.{method}')
+
+        request = self.factory.delete(
+            f'/api/deploy/iteration/detail/?detail_id={pending.id}'
+        )
+        request.user = self.user
+        self.assertIn('已关闭', self.decode(IterationDetailView.as_view()(request))['error'])
+
+        request = self.factory.post(f'/api/deploy/request/{failed_req.id}/')
+        request.user = self.user
+        result = self.decode(RequestDetailView.as_view()(request, failed_req.id))
+        self.assertIn('已关闭', result['error'])
+
+        pending.refresh_from_db()
+        failed_req.refresh_from_db()
+        self.assertEqual('5', pending.status)
+        self.assertEqual('v1.0.0', pending.version)
+        self.assertEqual('-3', failed_req.status)
+        thread.assert_not_called()
+
+    def test_closed_detail_is_not_reopened_or_warned(self):
+        pending, _ = self.make_detail(self.iteration, self.deploys[0], '0', '-1')
+        auto_close_idle_iterations(days=30)
+        pending.refresh_from_db()
+
+        reconcile_iteration_detail_statuses([pending])
+        pending.refresh_from_db()
+        self.assertEqual('5', pending.status)
+
+        new_iteration = self.make_iteration('新迭代', human_datetime())
+        new_detail, _ = self.make_detail(new_iteration, self.deploys[0])
+        warnings = get_cross_iteration_warnings(new_iteration, [new_detail])
+        self.assertEqual([], warnings[new_detail.id]['related_iterations'])
+
+    def test_iteration_without_pending_details_cannot_be_closed(self):
+        self.make_detail(self.iteration, self.deploys[0], '3', '-3')
+        self.make_detail(self.iteration, self.deploys[1], '2', '3')
+
+        self.assertEqual([], auto_close_idle_iterations(days=30))
+        request = self.factory.post(
+            '/api/deploy/iteration/close/',
+            data=json.dumps({'id': self.iteration.id}),
+            content_type='application/json',
+        )
+        request.user = self.user
+        result = self.decode(IterationCloseView.as_view()(request))
+
+        self.assertEqual('迭代中没有待发布的应用，无需关闭', result['error'])
+        self.iteration.refresh_from_db()
+        self.assertEqual('1', self.iteration.status)
+

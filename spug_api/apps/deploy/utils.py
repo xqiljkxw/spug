@@ -29,6 +29,11 @@ import re
 REPOS_DIR = settings.REPOS_DIR
 BUILD_DIR = settings.BUILD_DIR
 ITERATION_VERSION_PATTERN = re.compile(r'^v([0-9]+)\.([0-9]+)\.([0-9]+)$')
+ITERATION_CLOSED_STATUS = '-4'
+ITERATION_DETAIL_CLOSED_STATUS = '5'
+ITERATION_NO_PENDING_ERROR = '迭代中没有待发布的应用，无需关闭'
+# 迭代超过该天数没有任何发布动作时自动关闭，可在 overrides 中覆盖，0 表示不自动关闭
+ITERATION_AUTO_CLOSE_DAYS = getattr(settings, 'ITERATION_AUTO_CLOSE_DAYS', 30)
 
 
 def scoped_deploy_requests(user):
@@ -253,6 +258,8 @@ def get_cross_iteration_warnings(iteration, details):
         status__in=('0', '1', '4'),
     ).exclude(
         iteration_id=iteration.id
+    ).exclude(
+        iteration__status=ITERATION_CLOSED_STATUS
     ).select_related('iteration').order_by('-iteration_id', 'sequence'))
     max_retry_hours = max(
         (
@@ -284,6 +291,8 @@ def get_cross_iteration_warnings(iteration, details):
                 status='3',
             ).exclude(
                 iteration_id=iteration.id
+            ).exclude(
+                iteration__status=ITERATION_CLOSED_STATUS
             ).select_related('iteration'))
 
     related_request_ids = {
@@ -612,6 +621,8 @@ def _update_iteration_detail_status(req):
             if detail_status is None:
                 return
 
+            # 已关闭的明细是终态，不再随发布申请状态变化
+            details = details.exclude(status=ITERATION_DETAIL_CLOSED_STATUS)
             iteration_ids = set(details.values_list('iteration_id', flat=True))
             details.update(status=detail_status)
             
@@ -671,6 +682,8 @@ def reconcile_iteration_detail_statuses(details):
     details_to_update = []
     iteration_ids = set()
     for detail in details:
+        if detail.status == ITERATION_DETAIL_CLOSED_STATUS:
+            continue
         request_status = request_statuses.get(detail.request_id)
         expected_status = get_iteration_detail_status(request_status)
         if expected_status is None or detail.status == expected_status:
@@ -732,6 +745,8 @@ def update_iteration_overall_status(iteration_id):
         iteration = DeployIteration.objects.filter(pk=iteration_id).first()
         if not iteration:
             return
+        if iteration.status == ITERATION_CLOSED_STATUS:
+            return iteration.status
 
         detail_statuses = iteration.details.values_list('status', flat=True)
         new_status = get_iteration_overall_status(detail_statuses)
@@ -744,6 +759,166 @@ def update_iteration_overall_status(iteration_id):
         import logging
         logging.error(f'更新迭代整体状态失败: {e}')
         return None
+
+
+def get_iteration_closed_error(iteration):
+    """已关闭的迭代为只读，返回拒绝修改的原因。"""
+    if iteration is not None and iteration.status == ITERATION_CLOSED_STATUS:
+        return '迭代已关闭，不能再做任何修改'
+    return None
+
+
+def get_request_iteration_closed_error(req):
+    """发布申请归属已关闭迭代时禁止再执行或重试。"""
+    from apps.deploy.models import DeployIterationDetail
+
+    if DeployIterationDetail.objects.filter(
+        request_id=req.id,
+        iteration__status=ITERATION_CLOSED_STATUS,
+    ).exists():
+        return '该发布申请所属迭代已关闭，不能再执行'
+    return None
+
+
+def get_iteration_close_error(iteration, details, requests_map):
+    """返回迭代不能关闭的原因。
+
+    只有存在待发布应用的迭代才能关闭；发布中（含排队）、结果未知、镜像上传中的必须先处理完。
+    """
+    if iteration.status == ITERATION_CLOSED_STATUS:
+        return '迭代已关闭'
+    if iteration.status == '2':
+        return '迭代已全部发布成功，无需关闭'
+    for detail in details:
+        req = requests_map.get(detail.request_id) if detail.request_id else None
+        app_name = detail.deploy.app.name if detail.deploy and detail.deploy.app else ''
+        if detail.status == '4' or (req and req.status == '-2'):
+            return f'应用【{app_name}】发布结果未知，请先在发布申请中核验确认后再关闭'
+        if detail.status == '1' or (req and req.status in ('1', '2')):
+            return f'应用【{app_name}】正在发布或排队中，请等待发布结束后再关闭'
+        if detail.image_status == '1':
+            return f'应用【{app_name}】镜像正在上传中，请等待上传结束后再关闭'
+    has_pending = any(
+        (get_iteration_detail_status(requests_map[detail.request_id].status)
+         if detail.request_id in requests_map else detail.status) == '0'
+        for detail in details
+    )
+    if not has_pending:
+        return ITERATION_NO_PENDING_ERROR
+    return None
+
+
+def get_iteration_last_activity(iteration, details, requests_map):
+    """迭代最后一次动作时间：创建、修改、发布申请执行/失败、镜像预传中的最晚者。"""
+    from apps.docker_image.models import DockerImage
+
+    values = [iteration.created_at, iteration.updated_at]
+    for req in requests_map.values():
+        values.extend((req.created_at, req.do_at, req.failed_at))
+    image_ids = [detail.docker_image_id for detail in details if detail.docker_image_id]
+    if image_ids:
+        values.extend(DockerImage.objects.filter(pk__in=image_ids).values_list(
+            'created_at', flat=True
+        ))
+    times = []
+    for value in values:
+        if not value:
+            continue
+        try:
+            times.append(parse_time(value))
+        except (TypeError, ValueError):
+            continue
+    return max(times) if times else None
+
+
+def close_iteration(iteration_id, operator=None, reason='', idle_before=None):
+    """关闭迭代：只把待发布（含已预传镜像未发布）的明细置为已关闭，其他明细和发布申请保持不变。
+
+    idle_before 不为空时为自动关闭，只关闭最后动作时间早于该时间的迭代。
+    返回 (是否关闭, 错误信息)。调用方无需处于事务中。
+    """
+    from apps.deploy.models import DeployIteration
+    from apps.deploy.audit import record_deploy_operation
+
+    with transaction.atomic():
+        iteration = DeployIteration.objects.select_for_update().filter(
+            pk=iteration_id
+        ).first()
+        if not iteration:
+            return False, '未找到指定迭代'
+        details = list(iteration.details.select_for_update().select_related(
+            'deploy', 'deploy__app'
+        ))
+        request_ids = [detail.request_id for detail in details if detail.request_id]
+        requests_map = {
+            req.id: req for req in DeployRequest.objects.select_for_update().filter(
+                pk__in=request_ids
+            )
+        }
+        error = get_iteration_close_error(iteration, details, requests_map)
+        if error:
+            return False, error
+        if idle_before is not None:
+            last_activity = get_iteration_last_activity(iteration, details, requests_map)
+            if last_activity is None or last_activity >= idle_before:
+                return False, '迭代仍在有效期内'
+
+        for detail in details:
+            req = requests_map.get(detail.request_id) if detail.request_id else None
+            effective_status = get_iteration_detail_status(req.status) if req else detail.status
+            if effective_status != '0':
+                continue
+            detail.status = ITERATION_DETAIL_CLOSED_STATUS
+            detail.save(update_fields=('status',))
+
+        iteration.status = ITERATION_CLOSED_STATUS
+        if operator:
+            iteration.updated_by = operator
+        iteration.save()
+
+        action = '关闭迭代' if operator else '系统自动关闭迭代'
+        if reason:
+            action = f'{action}：{reason}'
+        record_deploy_operation('iteration', iteration.id, iteration.name, action, operator)
+    return True, None
+
+
+def auto_close_idle_iterations(days=None, now=None):
+    """自动关闭超过指定天数没有任何发布动作的迭代，返回关闭的迭代ID列表。"""
+    import logging
+    from apps.deploy.models import DeployIteration
+
+    logger = logging.getLogger(__name__)
+    days = ITERATION_AUTO_CLOSE_DAYS if days is None else days
+    if not days or days <= 0:
+        return []
+    idle_before = (now or datetime.now()) - timedelta(days=days)
+    # created_at 晚于阈值的迭代一定还在有效期内，先用它粗筛
+    # 只有存在待发布应用的迭代才需要关闭
+    candidate_ids = list(DeployIteration.objects.exclude(
+        status__in=('2', ITERATION_CLOSED_STATUS)
+    ).filter(
+        created_at__lt=human_datetime(idle_before),
+        details__status='0',
+    ).distinct().values_list('id', flat=True))
+
+    closed_ids = []
+    for iteration_id in candidate_ids:
+        try:
+            closed, error = close_iteration(
+                iteration_id,
+                reason=f'超过{days}天没有发布动作',
+                idle_before=idle_before,
+            )
+            if closed:
+                closed_ids.append(iteration_id)
+            elif error and error not in ('迭代仍在有效期内', ITERATION_NO_PENDING_ERROR):
+                logger.info(f'迭代 id={iteration_id} 超期但未自动关闭: {error}')
+        except Exception as e:
+            logger.error(f'自动关闭迭代失败 id={iteration_id}: {e}')
+    if closed_ids:
+        logger.info(f'自动关闭了 {len(closed_ids)} 个超过{days}天无发布动作的迭代: {closed_ids}')
+    return closed_ids
         
 
 def _dispatch_pending_iteration_requests(req):
@@ -811,6 +986,8 @@ def _try_dispatch_queued_requests(iteration, env_id):
     import logging
     logger = logging.getLogger(__name__)
 
+    if iteration.status == ITERATION_CLOSED_STATUS:
+        return
     env = Environment.objects.filter(pk=env_id).first()
 
     # 如果 env.conc_num <= 0 则不限制并发，不需要调度
@@ -955,7 +1132,7 @@ def _recover_on_startup():
         dispatched_total = 0
         for iteration_id, env_id in iteration_env_pairs:
             iteration = DeployIteration.objects.filter(pk=iteration_id).first()
-            if not iteration:
+            if not iteration or iteration.status == ITERATION_CLOSED_STATUS:
                 continue
             env = Environment.objects.filter(pk=env_id).first()
             if not env or env.conc_num <= 0:
