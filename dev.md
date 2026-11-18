@@ -15,12 +15,16 @@ curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
 
 ### 创建运行环境
 
+# 安装pyenv 
+# pyenv install 3.9.17
+# ~/.pyenv/versions/3.9.17/bin/python -m venv venv
+
 ```python
 cd spug_api
 python3 -m venv venv
 # windows 使用 venv\Scripts\activate.bat
 source venv/bin/activate
-pip install -U pip setuptools
+pip install -U pip setuptools==81.0.0
 pip install -r requirements.txt  #-i https://pypi.tuna.tsinghua.edu.cn/simple/
 pip install mysqlclient==2.1.0
 ```
