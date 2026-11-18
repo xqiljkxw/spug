@@ -16,6 +16,7 @@ https://docs.djangoproject.com/en/2.2/ref/settings/
 
 import os
 import re
+import json
 
 # Build paths inside the project like this: os.path.join(BASE_DIR, ...)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -74,26 +75,11 @@ DATABASES = {
     }
 }
 
-CACHES = {
-    "default": {
-        "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": "redis://127.0.0.1:6379/1",
-        "OPTIONS": {
-            "CLIENT_CLASS": "django_redis.client.DefaultClient",
-        }
-    }
-}
-
-CHANNEL_LAYERS = {
-    "default": {
-        "BACKEND": "channels_redis.core.RedisChannelLayer",
-        "CONFIG": {
-            "hosts": [("127.0.0.1", 6379)],
-            "capacity": 1000,
-            "expiry": 120,
-        },
-    },
-}
+# Redis 配置，可在 spug/overrides.py 中覆盖（CACHES / CHANNEL_LAYERS 在加载 overrides 之后生成）
+REDIS_HOST = '127.0.0.1'
+REDIS_PORT = 6379
+REDIS_PASSWORD = None
+REDIS_CACHE_DB = 1
 
 TEMPLATES = [
     {
@@ -143,3 +129,45 @@ try:
     from spug.overrides import *
 except ImportError:
     pass
+
+# override default config by json（spug/overrides.json，键名与本文件中的配置项一致）
+_OVERRIDES_JSON = os.path.join(BASE_DIR, 'spug', 'overrides.json')
+if os.path.isfile(_OVERRIDES_JSON):
+    with open(_OVERRIDES_JSON, encoding='utf-8') as _f:
+        globals().update(json.load(_f))
+
+# 支持在 overrides 中以字典形式配置：REDIS = {'HOST': ..., 'PORT': ..., 'PASSWORD': ..., 'DB': ...}
+_REDIS = globals().get('REDIS') or {}
+REDIS_HOST = _REDIS.get('HOST', REDIS_HOST)
+REDIS_PORT = int(_REDIS.get('PORT', REDIS_PORT))
+REDIS_PASSWORD = _REDIS.get('PASSWORD', REDIS_PASSWORD)
+REDIS_CACHE_DB = _REDIS.get('DB', REDIS_CACHE_DB)
+
+# 根据 REDIS_* 生成 Redis 相关配置（overrides.py 中直接定义了 CACHES / CHANNEL_LAYERS 时以其为准）
+if 'CACHES' not in globals():
+    CACHES = {
+        "default": {
+            "BACKEND": "django_redis.cache.RedisCache",
+            "LOCATION": f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_CACHE_DB}",
+            "OPTIONS": {
+                "CLIENT_CLASS": "django_redis.client.DefaultClient",
+            }
+        }
+    }
+    if REDIS_PASSWORD:
+        CACHES["default"]["OPTIONS"]["PASSWORD"] = REDIS_PASSWORD
+
+if 'CHANNEL_LAYERS' not in globals():
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels_redis.core.RedisChannelLayer",
+            "CONFIG": {
+                "hosts": [
+                    {"address": (REDIS_HOST, REDIS_PORT), "password": REDIS_PASSWORD}
+                    if REDIS_PASSWORD else (REDIS_HOST, REDIS_PORT)
+                ],
+                "capacity": 1000,
+                "expiry": 120,
+            },
+        },
+    }

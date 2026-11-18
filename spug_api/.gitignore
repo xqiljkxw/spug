@@ -8,3 +8,4 @@ migrations/
 /repos/*
 /logs/*
 /spug/overrides.py
+/spug/overrides.json
