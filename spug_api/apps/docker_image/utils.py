@@ -129,7 +129,7 @@ def dispatch(rep: DockerImage, helper=None, env=None):
                 env.update(SPUG_CONTAINER_REPOSITORY='')
                 env.update(SPUG_CONTAINER_REPOSITORY_NAME_PREFIX='')
             # 添加Dockerfile变量
-            if extend.dockerfile_params:
+            if extend.use_dockerfile_template and extend.dockerfile_params:
                 dockerfile_params = json.loads(extend.dockerfile_params)
                 if dockerfile_params:
                     for d in dockerfile_params:
@@ -241,8 +241,12 @@ def _build(rep: DockerImage, helper, env, image_url):
         helper.send_step('image', 1, '\033[32m完成√\033[0m\r\n')
         
         # 查询dockerfile模板文件，有则写入
-        template = FileTemplate.objects.filter(env_id=rep.env_id, type='dockerfile').first()
-        if template is not None:
+        template = None
+        if extend.use_dockerfile_template:
+            template = FileTemplate.objects.filter(env_id=rep.env_id, type='dockerfile').first()
+        if not extend.use_dockerfile_template:
+            helper.send_step('image', 1, f'{human_time()} 未启用 Dockerfile 模板，跳过      ')
+        elif template is not None:
             remote_template_path = os.path.join(
                 extend.dst_repo,
                 rep.spug_version,

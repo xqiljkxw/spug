@@ -219,7 +219,9 @@ class DeployView(View):
                     Argument('image_version', handler=str.strip, default=''),
                     Argument('build_image_host_id', handler=str.strip, default=''),
                     Argument('dockerfile_params', type=list, help='dockerfile_params参数错误'),
-                    Argument('yaml_params', type=list, help='yaml_params参数错误')
+                    Argument('yaml_params', type=list, help='yaml_params参数错误'),
+                    Argument('use_dockerfile_template', type=bool, default=True),
+                    Argument('use_yaml_template', type=bool, default=True)
                 ).parse(request.body)
                 if error:
                     return json_response(error=error)

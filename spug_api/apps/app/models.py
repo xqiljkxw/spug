@@ -151,6 +151,10 @@ class DeployExtend3(models.Model, ModelMixin):
     dockerfile_params = models.TextField(null=True)
     # yaml配置指定的参数
     yaml_params = models.TextField(null=True)
+    # 是否读取模板中的Dockerfile
+    use_dockerfile_template = models.BooleanField(default=True)
+    # 是否读取模板中的yaml
+    use_yaml_template = models.BooleanField(default=True)
 
     def to_dict(self, *args, **kwargs):
         tmp = super().to_dict(*args, **kwargs)

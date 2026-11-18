@@ -5,7 +5,7 @@
  */
 import React, {useState, useEffect, useReducer} from 'react';
 import { observer } from 'mobx-react';
-import { Form, Button, message, Card } from 'antd';
+import { Form, Button, message, Card, Switch } from 'antd';
 import { ACEditor } from 'components';
 import { http, cleanCommand } from 'libs';
 import Tips from './Tips';
@@ -92,12 +92,21 @@ export default observer(function () {
 
   return (
     <Form layout="vertical" style={{padding: '0 120px'}}>
-      <Card size="small" title={template.id > 0 ? (<span style={{color:"#11D16D"}}>发布模板yaml参数配置(<a target="_blank" href='/config/file/template'>查看</a>)</span>) : (<span style={{color:"#f00"}}>当前环境不存在yaml模板文件(<a target="_blank" href='/config/file/template'>去设置</a>)</span>)}>
-        <TemplateFileParameter 
-          parameters={parameters}
-          param_values={info['yaml_params']}
-          onUpdate={updateYamlParams}/>
-      </Card>
+      <Form.Item label="k8s.yaml" tooltip="自动读取配置中心-模板文件（根据对应的环境自动读取）（会将yaml文件写入到目标主机的发布目录）；默认：读取模板；自定义：不读取模板">
+        <Switch
+          checkedChildren="自定义"
+          unCheckedChildren="默认"
+          checked={info['use_yaml_template'] === false}
+          onChange={v => info['use_yaml_template'] = !v}/>
+      </Form.Item>
+      {info['use_yaml_template'] !== false && (
+        <Card size="small" title={template.id > 0 ? (<span style={{color:"#11D16D"}}>发布模板yaml参数配置(<a target="_blank" href='/config/file/template'>查看</a>)</span>) : (<span style={{color:"#f00"}}>当前环境不存在yaml模板文件(<a target="_blank" href='/config/file/template'>去设置</a>)</span>)}>
+          <TemplateFileParameter 
+            parameters={parameters}
+            param_values={info['yaml_params']}
+            onUpdate={updateYamlParams}/>
+        </Card>
+      )}
       <Form.Item
         label="应用发布前执行"
         tooltip="在发布的目标主机上运行，当前目录为目标主机上待发布的源代码目录，可执行任意自定义命令。（如果配置了yaml模板，则需要自己用envsubst替换模板文件生成新的文件）"

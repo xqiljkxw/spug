@@ -1234,7 +1234,7 @@ def _ext3_deploy(req, helper, env):
         env.update(SPUG_CONTAINER_REPOSITORY_NAME_PREFIX='')
     
     # 添加Dockerfile变量
-    if extend.dockerfile_params:
+    if extend.use_dockerfile_template and extend.dockerfile_params:
         dockerfile_params = json.loads(extend.dockerfile_params)
         if dockerfile_params:
             for d in dockerfile_params:
@@ -1261,7 +1261,7 @@ def _ext3_deploy(req, helper, env):
         helper.send_info('image', f'\r\n \033[32m使用镜像仓库\033[0m \r\n id:[{req.docker_image_id}] \r\n 环境:[{req.docker_image.env.name}] \r\n 版本:[{req.docker_image.version}] \r\n 镜像URL:[{req.docker_image.url}] \r\n 创建时间:[{req.docker_image.created_at}] \r\n 创建人:[{req.docker_image.created_by.nickname}] \r\n 备注:[{req.docker_image.remarks}] \r\n \033[32m完成√\033[0m\r\n')
         
     # 添加yaml变量
-    if extend.yaml_params:
+    if extend.use_yaml_template and extend.yaml_params:
         yaml_params = json.loads(extend.yaml_params)
         if yaml_params:
             for d in yaml_params:
@@ -1455,8 +1455,12 @@ def _deploy_ext3_host(req, helper, h_id, env):
             clean_command = f'ls -d {extend.deploy_id}_* 2> /dev/null | sort -t _ -rnk2 | tail -n +{extend.versions + 1} | xargs rm -rf'
             helper.remote_raw(host.id, ssh, f'cd {extend.dst_repo} && {clean_command}')
             # 查询yaml模板文件，有则写入 并上传
-            template = FileTemplate.objects.filter(env_id=req.deploy.env_id, type='yaml').first()
-            if template is not None:
+            template = None
+            if extend.use_yaml_template:
+                template = FileTemplate.objects.filter(env_id=req.deploy.env_id, type='yaml').first()
+            if not extend.use_yaml_template:
+                helper.send_step(host.id, 1, f'{human_time()} 未启用 k8s.yaml 模板，跳过      ')
+            elif template is not None:
                 remote_template_path = os.path.join(
                     extend.dst_repo,
                     req.spug_version,
@@ -1514,7 +1518,7 @@ def _deploy_ext3_host(req, helper, h_id, env):
 def _ext3_restart(req, helper, env):
     extend = req.deploy.extend_obj
     # 添加yaml变量
-    if extend.yaml_params:
+    if extend.use_yaml_template and extend.yaml_params:
         yaml_params = json.loads(extend.yaml_params)
         if yaml_params:
             for d in yaml_params:

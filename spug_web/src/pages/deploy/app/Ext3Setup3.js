@@ -5,7 +5,7 @@
  */
 import React, {useState, useEffect, useReducer} from 'react';
 import { observer } from 'mobx-react';
-import { Form, Button, Row, Col, Input, Card } from 'antd';
+import { Form, Button, Row, Col, Input, Card, Switch } from 'antd';
 import { ACEditor } from 'components';
 import { http, cleanCommand } from 'libs';
 import Tips from './Tips';
@@ -105,17 +105,25 @@ export default observer(function () {
           </Form.Item>
         </Col>
         <Col span={10}>
-          <Form.Item label="Dockerfile" tooltip="自动读取配置中心-模板文件（根据对应的环境自动读取）（会将Dockerfile文件写入到编译主机的发布目录）">
-            {template.id > 0 ? (<span style={{color:"#11D16D"}}>存在模板文件(<a target="_blank" href='/config/file/template'>查看</a>)</span>) : (<span style={{color:"#f00"}}>不存在模板文件(<a target="_blank" href='/config/file/template'>去设置</a>)</span>)}
+          <Form.Item label="Dockerfile" tooltip="自动读取配置中心-模板文件（根据对应的环境自动读取）（会将Dockerfile文件写入到编译主机的发布目录）；默认：读取模板；自定义：不读取模板，使用代码中自带的Dockerfile">
+            <Switch
+              style={{marginRight: 8}}
+              checkedChildren="自定义"
+              unCheckedChildren="默认"
+              checked={info['use_dockerfile_template'] === false}
+              onChange={v => info['use_dockerfile_template'] = !v}/>
+            {info['use_dockerfile_template'] === false ? null : template.id > 0 ? (<span style={{color:"#11D16D"}}>存在模板文件(<a target="_blank" href='/config/file/template'>查看</a>)</span>) : (<span style={{color:"#f00"}}>不存在模板文件(<a target="_blank" href='/config/file/template'>去设置</a>)</span>)}
           </Form.Item>
         </Col>
       </Row>
-      <Card size="small" title={"Dockerfile 动态参数"}>
-        <TemplateFileParameter 
-          parameters={parameters} 
-          param_values={info['dockerfile_params']}
-          onUpdate={(variable, value) => {updateDockerfileParams(variable, value)}}/>
-      </Card>
+      {info['use_dockerfile_template'] !== false && (
+        <Card size="small" title={"Dockerfile 动态参数"}>
+          <TemplateFileParameter 
+            parameters={parameters} 
+            param_values={info['dockerfile_params']}
+            onUpdate={(variable, value) => {updateDockerfileParams(variable, value)}}/>
+        </Card>
+      )}
       <Form.Item
         label="编译镜像"
         tooltip="在编译镜像的目标主机上运行，当前目录为目标主机上待发布的源代码目录，可执行任意自定义命令。（eg: 编译本地镜像）"
