@@ -1369,21 +1369,15 @@ def _ext3_deploy(req, helper, env):
         else:
             helper.send_info('local', f'\r\n \033[32m使用构建仓库\033[0m \r\n id:[{req.repository_id}] \r\n 环境:[{req.repository.env.name}] \r\n 版本:[{req.repository.version}] \r\n 创建时间:[{req.repository.created_at}] \r\n 创建人:[{req.repository.created_by.nickname}] \r\n 备注:[{req.repository.remarks}] \r\n \033[32m完成√\033[0m\r\n')
     
+    # 选择镜像发布时去掉 docker_image 前缀，与直接发布走同一套变量规则，
+    # 保证渲染出的 SPUG_IMAGE_VERSION 与构建该镜像时一致（镜像URL校验依赖此值）
+    if extras[0] == 'docker_image':
+        extras = extras[1:]
     if extras[0] == 'repository':
         extras = extras[1:]
     if extras[0] == 'branch':
         env.update(SPUG_GIT_BRANCH=extras[1], SPUG_GIT_COMMIT_ID=extras[2])
-    if extras[0] == 'docker_image':
-        extras = extras[1:]
-        # 设置变量
-        if extras[0] == 'repository':
-                extras = extras[1:]
-        if extras[0] == 'branch':
-            env.update(SPUG_GIT_BRANCH=extras[1], SPUG_GIT_COMMIT_ID=extras[2])
-        else:
-            env.update(SPUG_GIT_TAG=extras[1])
-    else:
-        env.update(SPUG_GIT_TAG=extras[1])
+    env.update(SPUG_GIT_TAG=extras[1])
         
     extend = req.deploy.extend_obj
     
